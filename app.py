@@ -1,47 +1,59 @@
 from flask import Flask, request, send_from_directory
 from datetime import date, timedelta
+import sqlite3
+import os
 
 app = Flask(__name__)
+DB_NAME = 'presences.db'
 
-# 🔧 Génère le nom du fichier de présence du jour
-def fichier_du_jour():
-    return f"presence_{date.today().isoformat()}.txt"
+# 🔧 Initialise la base si elle n'existe pas encore
+def init_db():
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS presences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nom TEXT NOT NULL,
+                date TEXT NOT NULL
+            )
+        ''')
+        conn.commit()
+
+init_db()
 
 # 🔧 Route principale — Formulaire HTML
 @app.route('/')
 def index():
     return send_from_directory('.', 'index.html')
 
-# 🔧 Route pour enregistrer une présence
+# 🔧 Enregistrement de présence dans la base
 @app.route('/presence', methods=['POST'])
 def enregistrer_presence():
     nom = request.form['nom'].strip()
     if nom:
-        with open(fichier_du_jour(), 'a', encoding='utf-8') as f:
-            f.write(nom + '\n')
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
+            c.execute('INSERT INTO presences (nom, date) VALUES (?, ?)', (nom, date.today().isoformat()))
+            conn.commit()
     return f"""
         <h2>✅ Présence enregistrée pour {nom} aujourd'hui.</h2>
-        <a href="/">➕ Enregistrer un autre campeur</a> | <a href="/comparer">📊 Voir le rapport</a>
+        <a href="/">➕ Enregistrer un autre campeur</a> | 
+        <a href="/comparer">📊 Voir le rapport</a>
     """
 
-# 🔧 Route pour comparer aujourd’hui et hier
+# 🔧 Comparaison des présences entre aujourd’hui et hier
 @app.route('/comparer')
 def comparer():
-    today = date.today()
-    yesterday = today - timedelta(days=1)
+    today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
 
-    fichier_ajd = f"presence_{today.isoformat()}.txt"
-    fichier_hier = f"presence_{yesterday.isoformat()}.txt"
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute('SELECT nom FROM presences WHERE date = ?', (today,))
+        liste_ajd = set(row[0] for row in c.fetchall())
 
-    def lire(fichier):
-        try:
-            with open(fichier, 'r', encoding='utf-8') as f:
-                return set(ligne.strip() for ligne in f if ligne.strip())
-        except FileNotFoundError:
-            return set()
-
-    liste_ajd = lire(fichier_ajd)
-    liste_hier = lire(fichier_hier)
+        c.execute('SELECT nom FROM presences WHERE date = ?', (yesterday,))
+        liste_hier = set(row[0] for row in c.fetchall())
 
     absents = liste_hier - liste_ajd
     nouveaux = liste_ajd - liste_hier
@@ -60,3 +72,27 @@ def comparer():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+
+from flask import send_file
+import csv
+
+# 🔧 Route pour télécharger la liste de présence du jour au format CSV
+@app.route('/telecharger')
+def telecharger():
+    fichier = 'presences_du_jour.csv'
+    date_du_jour = date.today().isoformat()
+
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute('SELECT nom FROM presences WHERE date = ?', (date_du_jour,))
+        lignes = c.fetchall()
+
+    # 🔧 Écrit dans un fichier CSV
+    with open(fichier, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Nom', 'Date'])  # En-tête
+        for ligne in lignes:
+            writer.writerow([ligne[0], date_du_jour])
+
+    return send_file(fichier, as_attachment=True)
